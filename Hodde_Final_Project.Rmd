@@ -1,0 +1,393 @@
+---
+title: "IS607 Final Project"
+author: "Rob Hodde"
+date: "May 15, 2016"
+output: html_document
+---
+
+
+--------
+
+This project seeks to explore the relationship between the sentiment of press coverage and public polls toward Donald Trump.  
+
+--------
+
+
+
+
+
+
+--------
+--------
+
+###Extraction Layer###
+
+First we will use the IBM Alchemy News API to gather summary statistics on sentiment of press coverage.  The Alchemy News service gathers approximately 250,000 news articles daily from 75,000 news sources.  It uses proprietary algorithms to analyze these articles for many factors, including sentiment.  We will request an analysis of stories which are categorized as "Law, Government and Politics" with the word "Trump" in the title.  The News API will return three sentiment categories - Positive, Neutral or Negative - and provide a count of each by day.
+
+```{r}
+#file_loc <- "C:/Data/"  #for testing
+file_loc <- "https://raw.githubusercontent.com/LovinSpoonful/IS607-FINAL-PROJECT/master/"
+
+```
+
+```{r, eval=FALSE}
+
+library(stringr)
+
+seconds_per_day <- (24*60*60)
+
+#load parameters for API call
+historic_cutoff_days <- 60 #only articles from the past 60 days are made available
+my_api_key <- "fe1dd749ef768f4ff10722467d9b886b7b794e09"
+my_text <- "Trump"
+my_type <- "person"
+my_sentiment <- c("positive","negative","neutral")
+my_taxonomy <- "law,%20govt%20and%20politics"
+
+#the API requires date parameter to be sent as the number of seconds from January 1, 1970 12:00:00am.
+today <- Sys.Date()
+today_sec <- diff(as.numeric(strptime(c("1970-01-01", as.character(Sys.Date())), format = "%Y-%m-%d"))) 
+
+#loop through each day and gather sentiments stats in daily buckets
+for (i in -historic_cutoff_days:0){
+
+  hist_day <- today + i
+  hist_sec <- today_sec + i * seconds_per_day
+
+  for (j in 1:length(my_sentiment)){
+
+      #enter the parameters for the request to IBM Alchemy server
+      url <- paste("https://access.alchemyapi.com/calls/data/GetNews?",
+                   "apikey=", my_api_key, 
+                   "&start=", hist_sec,
+                   "&end=", hist_sec + seconds_per_day-1,
+                   "&q.enriched.url.enrichedTitle.entities.entity=|",
+                   "text=", my_text,
+                   ",type=", my_type,
+                   "|&q.enriched.url.enrichedTitle.docSentiment.type=", my_sentiment[j],
+                   "&q.enriched.url.enrichedTitle.taxonomy.taxonomy_.label=", my_taxonomy,
+                   "&count=25&outputMode=json&timeSlice=1d", sep = "")
+
+    qry_result <- readLines(url) #send the request 
+    Sys.sleep(3)
+    s <- str_replace(qry_result[6],"        \"count\": ","") #the article count is on line 6
+    qry_count <- str_replace(s,",","") #extract the count
+
+    #place the returned values in a dataframe
+    new_day <- data.frame(hist_day,my_sentiment[j],qry_count,stringsAsFactors = FALSE) 
+
+    #build up a data frame with all the returned values
+    if (i == -historic_cutoff_days) { 
+      if (j ==1) dfDailySentiment <- new_day
+    } else { 
+      dfDailySentiment = rbind(dfDailySentiment,new_day)
+    } 
+  }
+}
+
+#write the data frame to a text file
+write.csv(dfDailySentiment, file = paste(file_loc, "DailySentiment.csv",sep = ""),row.names=TRUE, na="")
+
+```
+
+
+Next we will acquire polling data for Donald Trump from Real Clear Politics.  We will use the Overall Favorable / Unfavorable Poll.  
+  
+```{r, eval=FALSE}
+
+#adapted from http://stackoverflow.com/questions/1395528/scraping-html-tables-into-r-data-frames-using-the-xml-package
+
+#import the most current polling information into a data table for analysis
+require(XML)
+myURL <- "http://www.realclearpolitics.com/epolls/other/trump_favorableunfavorable-5493.html"
+
+tables <- readHTMLTable(myURL) # read the poll web page
+n.rows <- unlist(lapply(tables, function(t) dim(t)[1]))  #format to table 
+dfPoll <- tables[[which.max(n.rows)]]  #assign the poll data to a data frame
+
+write.csv(dfPoll, file = paste(file_loc, "Poll.csv",sep = ""),row.names=TRUE, na="") 
+
+```
+
+--------
+
+
+
+
+
+
+--------
+--------
+
+###Transformation Layer###
+
+Next we will create daily and weekly summaries of new articles sentiment. We will instantiate them into data frames suitable for creating visualizations.  
+
+  
+```{r}
+
+#Read the sentiment information into memory and prepare it for visualization
+sentiment <- read.csv(file = paste(file_loc,"DailySentiment.csv",sep = ""), stringsAsFactors = FALSE)
+sentiment[,"Day"] <- as.Date(sentiment[,"Day"],"%m/%d/%Y") #convert to r date
+
+#Spread the tidy data list into 3 columns: Positive, Neutral and Negative Sentiment
+suppressMessages(library(dplyr))
+suppressWarnings(library(tidyr))
+sent_daily <- spread(sentiment,Sentiment,Count) # cast the status values into separate columns
+sent_daily <- mutate(sent_daily,total = positive + neutral + negative) # add total article count by day
+
+#calculate the proportion of negative, neutral and positive articles by day
+sent_daily <- mutate(sent_daily,neg_pct  = round(negative / total,digits = 2)*100)
+sent_daily <- mutate(sent_daily,neut_pct = round(neutral / total,digits = 2)*100)
+sent_daily <- mutate(sent_daily,pos_pct  = round(positive / total,digits = 2)*100)
+
+#add the week number to each row so that we can analyze by week
+sent_daily <- mutate(sent_daily,start_date = as.Date("2016-01-01")) #add column holding first day of year
+week_no <- as.numeric(round(difftime(sent_daily$Day, sent_daily$start_date, units = "weeks"),digits = 0)) #calc week
+sent_daily <- cbind(sent_daily,week_no) #add week of year column to daily sentiment data frame
+
+#calculate average sentiment by week
+neg <- sent_daily %>% 
+  group_by(week_no) %>% 
+  summarise(neg_pct_week  = round(mean(neg_pct), digits = 0))
+neut <- sent_daily %>% 
+  group_by(week_no) %>% 
+  summarise(neut_pct_week  = round(mean(neut_pct), digits = 0))
+pos <- sent_daily %>% 
+  group_by(week_no) %>% 
+  summarise(pos_pct_week  = round(mean(pos_pct), digits = 0))
+sent_weekly <- cbind(neg, neut$neut_pct_week, pos$pos_pct_week)
+colnames(sent_weekly) <- c("week_no","neg_pct","neut_pct","pos_pct") #change the column names to be more legible
+
+#show the structure of the sentiment data frame
+str(sent_weekly)
+
+```
+  
+
+--------
+
+The dataframe "sent_weekly" is the first major data transform available for visualization.  It represents the average sentiment values for each week.  
+
+
+Next we will create a dataframe that contains the average approval / disapproval poll ratings by week for the same time periods.  
+
+```{r}
+
+suppressWarnings(library(stringr))
+
+poll <- read.csv(file = paste(file_loc,"Poll.csv",sep = ""), stringsAsFactors = FALSE) #read the poll data into memory
+
+poll <- poll[1:20,]  #limit dataset to timeframe of available press sentiment analysis (hard coded)
+poll <- poll[-1,]   #remove top line which is a summary of entire period
+colnames(poll)[5:6] <- c("Favorable","Unfavorable") # remove periods from these column names
+
+#convert the poll dates to r dates
+poll_date <- substr(poll$Date,1,str_locate(poll$Date,"-")-2)  
+poll_date <- as.Date(poll_date,"%m/%d")  # ** not scalable ** breaks at year boundary
+poll <- cbind(poll,poll_date)
+
+#add the week number to each row so that we can analyze by week
+poll <- mutate(poll,start_date = as.Date("2016-01-01")) #add column holding first day of year
+week_no <- as.numeric(round(difftime(poll$poll_date, poll$start_date, units = "weeks"),digits = 0)) #calc week of year
+poll <- cbind(poll,week_no) #add week of year column to daily sentiment data frame
+
+#calculate average sentiment by week
+fav <- poll %>% 
+  group_by(week_no) %>% 
+  summarise(fav_week  = round(mean(Favorable), digits = 0))
+unfav <- poll %>% 
+  group_by(week_no) %>% 
+  summarise(unfav_week  = round(mean(Unfavorable), digits = 0))
+
+poll_weekly <- cbind(fav, unfav$unfav_week)
+colnames(poll_weekly) <- c("week_no","fav_pct","unfav_pct") #change the column names to be more legible
+str(poll_weekly)
+
+```
+
+The dataframe "poll_weekly" is the second major data transform available for visualization.  It represents the average favorability rating by week.  
+
+Next we will set up merged dataframes for positive / favorable ratings:  
+
+```{r}
+
+#get press sentiment by week - positive
+sp <- as.data.frame(cbind(sent_weekly$week_no, sent_weekly$pos_pct)) 
+colnames(sp) <- c("week_no","pos_pct")
+
+#get poll results by week - favorable
+pp <- as.data.frame(cbind(poll_weekly$week_no, poll_weekly$fav_pct))
+colnames(pp) <- c("week_no","fav_pct")
+
+#combine the press and poll data into a single dataframe 
+sent_poll_pos <- merge(sp,pp,by="week_no")
+
+#now get the poll results offset by two weeks
+pp2 <- as.data.frame(cbind(poll_weekly$week_no+2, poll_weekly$fav_pct))
+colnames(pp2) <- c("week_no","fav_pct")
+
+#combine the press and poll data - with polls offset two weeks
+sent_poll2_pos <- merge(sp,pp2,by="week_no")
+
+```
+
+Finally, we will set up the negative / unfavorable dataframes:  
+
+
+```{r}
+
+#get press sentiment by week - negative
+sn <- as.data.frame(cbind(sent_weekly$week_no, sent_weekly$neg_pct)) 
+colnames(sn) <- c("week_no","neg_pct")
+
+#get poll results by week - unfavorable 
+pn <- as.data.frame(cbind(poll_weekly$week_no, poll_weekly$unfav_pct))
+colnames(pn) <- c("week_no","unfav_pct")
+
+#combine the press and poll data into a single dataframe 
+sent_poll_neg <- merge(sn,pn,by="week_no")
+
+#now get the poll results offset by two weeks
+pn2 <- as.data.frame(cbind(poll_weekly$week_no+2, poll_weekly$unfav_pct))
+colnames(pn2) <- c("week_no","unfav_pct")
+
+#combine the press and poll data - with polls offset two weeks
+sent_poll2_neg <- merge(sn,pn2,by="week_no")
+
+```
+
+--------
+ 
+ 
+ 
+ 
+ 
+ 
+--------
+-------- 
+
+###Presentation Layer###
+
+We will now look for relationships between the polls and press sentiment.  We will illustrate the data offset by two weeks as well, to look for time-phased effects.  
+
+First, here is a look at the Press Sentiment data in its entirety:  
+
+```{r}
+
+library(lattice)
+xyplot(Count ~ Day | factor(Sentiment), data=sentiment, layout=c(3,1))
+
+```
+
+Below is the Poll data:  
+
+```{r}
+
+suppressWarnings(library(ggplot2))
+ggplot(poll, aes(as.Date(poll_date), y = value, color = variable)) + 
+         geom_line(aes(y = Favorable, col = "Favorable")) +
+         geom_line(aes(y = Unfavorable, col = "Unfavorable"))
+
+```
+
+--------
+
+Now we will look at the relationship between positive Press Sentiment and Poll Approval:
+
+```{r}
+
+ggplot(sent_poll_pos, aes(week_no, y = value, color = variable)) + 
+         geom_line(aes(y = pos_pct, col = "Pos Press")) +
+         geom_line(aes(y = fav_pct, col = "Fav Poll"))
+
+cor(sent_poll_pos$pos_pct, sent_poll_pos$fav_pct)
+mod_pos <- lm(pos_pct ~ fav_pct, data = sent_poll_pos)
+summary(mod_pos)
+
+```
+We can see above that the two factors are weakly correlated, the p value is much too high to be considered reliable, and the R squared value indicates virtually none of the change in media positive sentiment is attributable to poll approval.  
+
+
+Now let's look at what happens when we right-shift the poll data by two weeks.
+This is equivalent to asking, "Do changes in the polls show up in the media two weeks later?"  
+
+```{r}
+
+ggplot(sent_poll2_pos, aes(week_no, y = value, color = variable)) + 
+         geom_line(aes(y = pos_pct, col = "Pos Press")) +
+         geom_line(aes(y = fav_pct, col = "Fav Poll"))
+
+cor(sent_poll2_pos$pos_pct, sent_poll2_pos$fav_pct)
+mod_pos2 <- lm(pos_pct ~ fav_pct, data = sent_poll2_pos)
+summary(mod_pos2)
+```
+
+First off, the plots looks remarkable, as if the two lines are nearly the same.  It would seem to indicate that the press runs about two weeks behind the public.
+
+The correlation changes from -.21 to +.37, the p value drops from .65 to .36 (meaning, much greater certainty) and the r squared value increases from .04 to .14 (meaning that the vast majority of variation is not explained by this model).
+
+Directionally, these three results all support the notion that positive press tends to follow positive polling with a gap of two weeks.  However, the p value is still much higher than the ideal value of .05, which would provide 95% confidence.  
+
+
+--------
+
+Next let's look at negative sentiment:  
+
+```{r}
+
+ggplot(sent_poll_neg, aes(week_no, y = value, color = variable)) + 
+         geom_line(aes(y = neg_pct, col = "Neg Press")) +
+         geom_line(aes(y = unfav_pct, col = "Unfav Poll"))
+
+cor(sent_poll_neg$neg_pct, sent_poll_neg$unfav_pct)
+mod_neg <- lm(neg_pct ~ unfav_pct, data = sent_poll_neg)
+summary(mod_neg)
+
+```
+
+The correlation is extremely low (.04), the p value very high (.94) and R squared near zero.  All these indicate no in-phase relationship between changes in negative press sentiment versus changes in unfavorable poll ratings.  
+
+
+**Right-shifted two weeks:**  
+
+```{r}
+
+ggplot(sent_poll2_neg, aes(week_no, y = value, color = variable)) + 
+         geom_line(aes(y = neg_pct, col = "Neg Press")) +
+         geom_line(aes(y = unfav_pct, col = "Unfav Poll"))
+
+cor(sent_poll2_neg$neg_pct, sent_poll2_neg$unfav_pct)
+mod_neg2 <- lm(neg_pct ~ unfav_pct, data = sent_poll2_neg)
+summary(mod_neg2)
+```
+
+Visually we see again a similarity between the two plots.  The correlation is now .33, the p value is .42 and the R squared value is .11.      
+
+
+--------
+
+The Achille's heel of this study is the lack of data.  There are only six degrees of freedom in the linear models.  To achieve desired confidence levels we would need 32 weeks of Press Sentiment data.  We have eight.  
+
+ 
+--------
+
+
+--------
+--------
+
+**Conclusion:**  
+
+Whether or not there is a relationship between Press Sentiment and Polls Favorable / Unfavorable ratings of Donald Trump cannot be determined with 95% confidence given the data available.  However, this study has set up the framework to provide a conclusive answer to this question.  All that is needed is access to Alchemy News Press Sentiment data from June 2015 to the present.  Given this information, we could determine with 95% confidence if a relationship exists.  
+
+
+
+Additional questions to explore:  
+
+1. Can the study be repeated for other political candidates, and provide similar results?  Why or why not?  
+
+2. Are there non-linear models available that could provide insights into accelerative or "tipping point" factors?  
+
+3. Are there relationships between campaign rally speeches and the polls?  Press sentiment?
+
+
