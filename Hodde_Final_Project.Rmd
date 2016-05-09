@@ -367,7 +367,7 @@ Visually we see again a similarity between the two plots.  The correlation is no
 
 --------
 
-The Achille's heel of this study is the lack of data.  There are only six degrees of freedom in the linear models.  To achieve desired confidence levels we would need 32 weeks of Press Sentiment data.  We have eight.  
+The results are inconclusive - there are only six degrees of freedom in the linear models.  To achieve desired confidence levels we would need 32 weeks of Press Sentiment data.  However, the results are tantalizing enough to justify pursuing a subscription to the Alchemy data service, if the client is interested in exploring these types of relationships on an ongoing basis.
 
  
 --------
